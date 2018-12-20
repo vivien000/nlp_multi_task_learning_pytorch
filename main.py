@@ -20,6 +20,8 @@ parser.add_argument('--npos_layers', type=int, default=1,
                     help='number of POS tagging layers')
 parser.add_argument('--nchunk_layers', type=int, default=1,
                     help='number of chunking layers')
+parser.add_argument('--nner_layers', type=int, default=1,
+                    help='number of ner layers')
 parser.add_argument('--nhid', type=int, default=200,
                     help='number of hidden units')
 parser.add_argument('--lr', type=float, default=0.0001,
@@ -43,7 +45,7 @@ parser.add_argument('--bi', action='store_true',
 parser.add_argument('--log_interval', type=int, default=200, metavar='N',
                     help='report interval')
 parser.add_argument('--train_mode', type=str, default='Joint',
-                    help='Training mode of model from POS, Chunk, to Joint.')
+                    help='Training mode of model from POS, Chunk, NER to Joint.')
 parser.add_argument('--test_times', type=int, default=1,
                     help='run several times to get trustable result.')
 parser.add_argument('--save', type=str, default='model.pt',
@@ -68,17 +70,20 @@ else:
     corpus = Corpus(args.data)
     torch.save(corpus, corpus_path)
 
+
 ###############################################################################
 # Training Funcitons
 ###############################################################################
 def train(loss_log):
-    
+
     if args.train_mode == 'Joint':
-        target_data = (corpus.pos_train, corpus.chunk_train)
+        target_data = (corpus.pos_train, corpus.chunk_train, corpus.ner_train,)
     elif args.train_mode == 'POS':
         target_data = (corpus.pos_train, )
     elif args.train_mode == 'Chunk':
         target_data = (corpus.chunk_train, )
+    elif args.train_mode == 'NER':
+        target_data = (corpus.ner_train,)
 
     # Turn on training mode
     total_loss = 0
@@ -90,16 +95,18 @@ def train(loss_log):
         iteration += 1
         model.zero_grad()
         if args.train_mode == 'Joint':
-            if args.npos_layers == args.nchunk_layers:
+            if args.npos_layers == args.nchunk_layers == args.nner_layers:
                 hidden = model.rnn.init_hidden(args.batch_size)
-                outputs1, outputs2, hidden = model(X, hidden)
+                outputs1, outputs2, outputs3, hidden = model(X, hidden)
             else:
                 hidden1 = model.rnn1.init_hidden(args.batch_size)
                 hidden2 = model.init_rnn2_hidden(args.batch_size)
-                outputs1, outputs2, hidden1, hidden2 = model(X, hidden1, hidden2)    
+                hidden3 = model.init_rnn3_hidden(args.batch_size)
+                outputs1, outputs2, outputs3,  hidden1, hidden2, hidden3 = model(X, hidden1, hidden2, hidden3)
             loss1 = criterion(outputs1.view(-1, npos_tags), ys[0].view(-1))
             loss2 = criterion(outputs2.view(-1, nchunk_tags), ys[1].view(-1))
-            loss = loss1 + loss2
+            loss3 = criterion(outputs3.view(-1, nner_tags), ys[2].view(-1))
+            loss = loss1 + loss2 + loss3
         else:
             hidden = model.rnn.init_hidden(args.batch_size)
             outputs, hidden = model(X, hidden)
@@ -125,6 +132,7 @@ def train(loss_log):
             start_time = time.time()
     return loss_log
 
+
 def evaluate(source, target):
     model.eval()
     n_iteration = source.size(0) // (args.batch_size*args.seq_len)
@@ -134,20 +142,25 @@ def evaluate(source, target):
         if args.train_mode == 'Joint':
             if args.npos_layers == args.nchunk_layers:
                 hidden = model.rnn.init_hidden(args.batch_size)
-                outputs1, outputs2, hidden = model(X_val, hidden)
+                outputs1, outputs2, outputs3, hidden = model(X_val, hidden)
             else:
                 hidden1 = model.rnn1.init_hidden(args.batch_size)
                 hidden2 = model.init_rnn2_hidden(args.batch_size)
-                outputs1, outputs2, hidden1, hidden2 = model(X_val, hidden1, hidden2)    
+                hidden3 = model.init_rnn3_hidden(args.batch_size)
+                outputs1, outputs2, outputs3, hidden1, hidden2, hidden3 = model(X_val, hidden1, hidden2, hidden3)
             loss1 = criterion(outputs1.view(-1, npos_tags), y_vals[0].view(-1))
             loss2 = criterion(outputs2.view(-1, nchunk_tags), y_vals[1].view(-1))
-            loss = loss1 + loss2
+            loss3 = criterion(outputs3.view(-1, nner_tags), y_vals[2].view(-1))
+
+            loss = loss1 + loss2 + loss3
             # Make predict and calculate accuracy
             _, pred1 = outputs1.data.topk(1)
             _, pred2 = outputs2.data.topk(1)
+            _, pred3 = outputs3.data.topk(1)
             accuracy1 = torch.sum(pred1.squeeze(2) == y_vals[0].data) / (y_vals[0].size(0) * y_vals[0].size(1))
             accuracy2 = torch.sum(pred2.squeeze(2) == y_vals[1].data) / (y_vals[1].size(0) * y_vals[1].size(1))
-            accuracy = (accuracy1, accuracy2)
+            accuracy3 = torch.sum(pred3.squeeze(2) == y_vals[2].data) / (y_vals[2].size(0) * y_vals[2].size(1))
+            accuracy = (accuracy1, accuracy2, accuracy3)
         else:
             hidden = model.rnn.init_hidden(args.batch_size)
             outputs, hidden = model(X_val, hidden)
@@ -157,6 +170,7 @@ def evaluate(source, target):
         total_loss += loss
          
     return total_loss/n_iteration, accuracy
+
 
 best_val_accuracies = []
 test_accuracies = []
@@ -168,6 +182,7 @@ for i in range(args.test_times):
 ###############################################################################
     nwords = corpus.word_dict.nwords
     npos_tags = corpus.pos_dict.nwords
+    nner_tags = corpus.ner_dict.nwords
     nchunk_tags = corpus.chunk_dict.nwords
     pretrained_embeddings = None
     if args.pretrained_embeddings:
@@ -175,7 +190,7 @@ for i in range(args.test_times):
         pretrained_embeddings = torchtext.vocab.GloVe()
     if args.train_mode == 'Joint':
         model = JointModel(nwords, args.emsize, args.nhid, npos_tags, args.npos_layers,
-                           nchunk_tags, args.nchunk_layers, args.dropout, bi=args.bi, 
+                           nchunk_tags, args.nchunk_layers, nner_tags, args.nner_layers, args.dropout, bi=args.bi,
                            train_mode=args.train_mode, pretrained_vectors=pretrained_embeddings, vocab=corpus.word_dict)
     else:
         if args.train_mode == 'POS':
@@ -184,6 +199,9 @@ for i in range(args.test_times):
         elif args.train_mode == 'Chunk':
             ntags = nchunk_tags
             nlayers = args.nchunk_layers
+        elif args.train_mode == 'NER':
+            ntags = nner_tags
+            nlayers = args.nner_layers
         model = JointModel(nwords, args.emsize, args.nhid, ntags, nlayers,
                            args.dropout, bi=args.bi, train_mode=args.train_mode,
                            pretrained_vectors=pretrained_embeddings, vocab=corpus.word_dict)
@@ -208,12 +226,13 @@ for i in range(args.test_times):
             # Evaluation
             print('Evaluating on the valid data')
             if args.train_mode == 'Joint':
-                valid_target_data = (corpus.pos_valid, corpus.chunk_valid)
+                valid_target_data = (corpus.pos_valid, corpus.chunk_valid, corpus.ner_valid, )
             elif args.train_mode == 'POS':
                 valid_target_data = (corpus.pos_valid, ) 
             elif args.train_mode == 'Chunk':
                 valid_target_data = (corpus.chunk_valid, ) 
-            
+            elif args.train_mode == 'NER':
+                valid_target_data = (corpus.ner_valid, )
             val_loss, accuracy = evaluate(corpus.word_valid, valid_target_data)
             print('-'*50)
             if args.train_mode == 'Joint':
@@ -249,11 +268,13 @@ for i in range(args.test_times):
         model = torch.load(f)
 
     if args.train_mode == 'Joint':
-        test_target_data = (corpus.pos_test, corpus.chunk_test)
+        test_target_data = (corpus.pos_test, corpus.chunk_test, corpus.ner_test)
     elif args.train_mode == 'POS':
         test_target_data = (corpus.pos_test, ) 
     elif args.train_mode == 'Chunk':
-        test_target_data = (corpus.chunk_test, ) 
+        test_target_data = (corpus.chunk_test, )
+    elif args.train_mode == 'NER':
+        test_target_data = (corpus.ner_test, )
     test_loss, test_accuracy = evaluate(corpus.word_test, test_target_data)
     print('='*50)
     print("Evaluating on test data.")

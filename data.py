@@ -1,5 +1,5 @@
 import os
-import torch 
+import torch
 
 
 class Dictionary(object):
@@ -25,10 +25,11 @@ class Corpus(object):
         self.word_dict = Dictionary('Word')
         self.pos_dict = Dictionary('POS')
         self.chunk_dict = Dictionary('Chunk')
+        self.ner_dict = Dictionary('NER')
 
-        self.word_train, self.pos_train, self.chunk_train = self.tokenize(os.path.join(path, 'train.txt'))
-        self.word_valid, self.pos_valid, self.chunk_valid = self.tokenize(os.path.join(path, 'valid.txt'))
-        self.word_test, self.pos_test, self.chunk_test = self.tokenize(os.path.join(path, 'test.txt'))
+        self.word_train, self.pos_train, self.chunk_train, self.ner_train = self.tokenize(os.path.join(path, 'train.txt'))
+        self.word_valid, self.pos_valid, self.chunk_valid, self.ner_valid = self.tokenize(os.path.join(path, 'valid.txt'))
+        self.word_test, self.pos_test, self.chunk_test, self.ner_test = self.tokenize(os.path.join(path, 'test.txt'))
 
     def tokenize(self, path):
         "Tokenizes text data file"
@@ -37,28 +38,30 @@ class Corpus(object):
         with open(path, 'r') as f:
             tokens = 0
             for line in f:
-                try: 
-                    word, pos, chunk = line.strip().split()
-                except: 
+                try:
+                    word, pos, chunk, ner = line.strip().split()
+                except:
                     continue
                 tokens += 1
                 self.word_dict.add_word(word)
                 self.pos_dict.add_word(pos)
                 self.chunk_dict.add_word(chunk)
+                self.ner_dict.add_word(ner)
 
         with open(path, 'r') as f:
             word_ids = torch.LongTensor(tokens)
             pos_ids = torch.LongTensor(tokens)
             chunk_ids = torch.LongTensor(tokens)
+            ner_ids = torch.LongTensor(tokens)
             token = 0
             for line in f:
-                try: 
-                    word, pos, chunk = line.strip().split()
-                except: 
+                try:
+                    word, pos, chunk, ner = line.strip().split()
+                except:
                     continue
                 word_ids[token] = self.word_dict.word2idx[word]
                 pos_ids[token] = self.pos_dict.word2idx[pos]
                 chunk_ids[token] = self.chunk_dict.word2idx[chunk]
+                ner_ids[token] = self.ner_dict.word2idx[ner]
                 token += 1
-
-        return word_ids, pos_ids, chunk_ids
+        return word_ids, pos_ids, chunk_ids, ner_ids
