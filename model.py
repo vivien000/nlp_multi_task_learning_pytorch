@@ -144,24 +144,30 @@ class JointModel(nn.Module):
         
     def forward(self, input, *hidden):
         if self.train_mode == 'Joint':
+            # when the number of layers is same, hidden layers are shared
+            # and connected to different outputs
             if self.nlayers1 == self.nlayers2 == self.nlayers3:
-                logits, hidden = self.rnn(input, hidden[0])
-                outputs1 = self.linear1(logits)
-                outputs2 = self.linear2(logits)
-                outputs3 = self.linear3(logits)
-                return outputs1, outputs2, outputs3, hidden
+                logits, shared_hidden = self.rnn(input, hidden[0])
+                outputs_pos = self.linear1(logits)
+                outputs_chunk = self.linear2(logits)
+                outputs_ner = self.linear3(logits)
+                return outputs_pos, outputs_chunk, outputs_ner, shared_hidden
+            # cascading architecture where low-level tasks flow into high level
             else:
-                logits1, hidden1 = self.rnn1(input, hidden[0])
+                # POS tagging task
+                logits_pos, hidden_pos = self.rnn1(input, hidden[0])
                 self.rnn2.flatten_parameters()
-                logits2, hidden2 = self.rnn2(logits1, hidden[1])
+                # chunking using POS
+                logits_chunk, hidden_chunk = self.rnn2(logits_pos, hidden[1])
                 self.rnn3.flatten_parameters()
-                logits3, hidden3 = self.rnn3(logits2, hidden[2])
-                outputs1 = self.linear1(logits1)
-                outputs2 = self.linear2(logits2)
-                outputs3 = self.linear3(logits3)
-                return outputs1, outputs2, outputs3, hidden1, hidden2, hidden3
+                # NER using chunk
+                logits_ner, hidden_ner = self.rnn3(logits_chunk, hidden[2])
+                outputs_pos = self.linear1(logits_pos)
+                outputs_chunk = self.linear2(logits_chunk)
+                outputs_ner = self.linear3(logits_ner)
+                return outputs_pos, outputs_chunk, outputs_ner, hidden_pos, hidden_chunk, hidden_ner
         else:
-            logits, hidden = self.rnn(input, hidden[0])            
+            logits, hidden = self.rnn(input, hidden[0])
             outputs = self.linear(logits)
             return outputs, hidden
 
