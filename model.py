@@ -36,11 +36,12 @@ class EncoderModel(nn.Module):
         self.bi = bi
         print ("self.bi:", self.bi)
         if pretrained_vectors is not None:
-            print ("pretrained_vectors is None")
+            print ("pretrained_vectors is not None")
             for x, word in enumerate(word_dict.idx2word):
                 if word in pretrained_vectors.stoi:
                     pt_idx = pretrained_vectors.stoi[word]
-                    #print ("pt_idx:", pt_idx)
+                    print ("pt_idx:", pt_idx)
+                    print ("type: ", pretrained_vectors.vectors[pt_idx])
                     self.embed.weight[x].data.copy_(pretrained_vectors.vectors[pt_idx])
 
     def init_weights(self):
