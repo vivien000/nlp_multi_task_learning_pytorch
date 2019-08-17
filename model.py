@@ -40,12 +40,7 @@ class EncoderModel(nn.Module):
             for x, word in enumerate(word_dict.idx2word):
                 if word in pretrained_vectors.stoi:
                     pt_idx = pretrained_vectors.stoi[word]
-                    print ("pt_idx:", pt_idx)
-                    #print ("type: ", pretrained_vectors.vectors[pt_idx])
-                    print ("pretrained_vectors: ", pretrained_vectors.vectors[pt_idx].shape)
-                    print ("type: ", type(pretrained_vectors.vectors[pt_idx]))
                     self.embed.weight[x].data.copy_(pretrained_vectors.vectors[pt_idx])
-                    print ("OK")
         print ("== end init for EncoderModel")
 
     def init_weights(self):
