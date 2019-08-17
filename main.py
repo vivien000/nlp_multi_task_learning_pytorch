@@ -223,10 +223,12 @@ for i in range(args.test_times):
     if args.pretrained_embeddings:
         import torchtext
         pretrained_embeddings = torchtext.vocab.GloVe()
+        print ("pretrained_embeddings: ", pretrained_embeddings)
     if args.train_mode == 'Joint':
         model = JointModel(nwords, args.emsize, args.nhid, npos_tags, args.npos_layers,
                            nchunk_tags, args.nchunk_layers, nner_tags, args.nner_layers, args.dropout, bi=args.bi,
                            train_mode=args.train_mode, pretrained_vectors=pretrained_embeddings, vocab=corpus.word_dict)
+        print ("model: ", model)
     else:
         if args.train_mode == 'POS':
             ntags = npos_tags
