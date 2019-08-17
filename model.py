@@ -41,8 +41,10 @@ class EncoderModel(nn.Module):
                 if word in pretrained_vectors.stoi:
                     pt_idx = pretrained_vectors.stoi[word]
                     print ("pt_idx:", pt_idx)
-                    print ("type: ", pretrained_vectors.vectors[pt_idx])
-                    self.embed.weight[x].data.copy_(pretrained_vectors.vectors[pt_idx])
+                    #print ("type: ", pretrained_vectors.vectors[pt_idx])
+                    print ("pretrained_vectors: ", pretrained_vectors.vectors[pt_idx].shape)
+                    print ("type: ", type(pretrained_vectors.vectors[pt_idx]))
+                    self.embed.weight[x].data.copy_(torch.from_numpy(pretrained_vectors.vectors[pt_idx]))
 
     def init_weights(self):
         init_range = 0.1
