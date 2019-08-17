@@ -1,6 +1,6 @@
 import torch.nn as nn
 from torch.autograd import Variable
-
+import torch
 
 class EncoderModel(nn.Module):
     """Model include a transducer to predict at each time steps"""
