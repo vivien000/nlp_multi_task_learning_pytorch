@@ -12,6 +12,12 @@ from util import *
 # Set Parameters
 ###############################################################################
 parser = argparse.ArgumentParser(description='Pytorch NLP multi-task leraning for POS tagging and Chunking.')
+parser.add_argument('--lam', type=float, default=1.0,
+                    help='lambda')
+parser.add_argument('--alpha', type=float, default=1.0,
+                    help='alpha')
+parser.add_argument('--projection', action='store_true',
+                    help='use projection instead of multitask')
 parser.add_argument('--data', type=str, default='./data',
                     help='data file')
 parser.add_argument('--emsize', type=int, default=300,
@@ -57,11 +63,47 @@ args = parser.parse_args()
 torch.manual_seed(args.seed)
 torch.cuda.manual_seed_all(args.seed)
 
+def censored_vector(u, v, mode='Projection'):
+    """Adjusts the auxiliary loss gradient
+
+    Adjusts the auxiliary loss gradient before adding it to the primary loss
+    gradient and using a gradient descent-based method
+
+    Args:
+    u: A Torch variable representing the auxiliary loss gradient
+    v: A Torch variable representing the primary loss gradient
+    mode: The method used for the adjustment:
+      - Single task: the auxiliary loss gradient is ignored
+      - Multitask: the auxiliary loss gradient is kept as it is
+      - Unweighted cosine: cf. https://arxiv.org/abs/1812.02224
+      - Weighted cosine: cf. https://arxiv.org/abs/1812.02224
+      - Projection: cf. https://github.com/vivien000/auxiliary-learning
+      - Parameter-wise: same as projection but at the level of each parameter
+
+    Returns:
+    A tensorflow variable representing the adjusted auxiliary loss gradient
+    """
+    if mode == 'Single task' or u is None:
+        return 0
+    if mode == 'Multitask' or v is None:
+        return u
+    l_u, l_v = torch.norm(u), torch.norm(v)
+    if l_u.cpu().numpy() == 0 or l_v.cpu().numpy() == 0:
+        return u
+    u_dot_v = (u*v).sum()
+    if mode == 'Unweighted cosine':
+        return u if u_dot_v > 0 else torch.zeros_like(u)
+    if mode == 'Weighted cosine':
+        return torch.max(u_dot_v, torch.tensor(0.).cuda())*u/l_u/l_v
+    if mode == 'Projection':
+        return u - torch.min(u_dot_v, torch.tensor(0.).cuda())*v/l_v/l_v
+    if mode == 'Parameter-wise':
+        return u*((torch.sign(u*v)+1)/2)
+
 ###############################################################################
 # Load Data
 ###############################################################################
 corpus_path = args.save.strip() + '_corpus.pt'
-print('Loading corpus...')
 if os.path.exists(corpus_path):
     corpus = torch.load(corpus_path)
 else:
@@ -74,77 +116,77 @@ else:
 def train(loss_log):
     model.train() 
     if args.train_mode == 'Joint':
-        print ("Joint")
         target_data = (corpus.pos_train, corpus.chunk_train)
     elif args.train_mode == 'POS':
-        print ("POS")
         target_data = (corpus.pos_train, )
     elif args.train_mode == 'Chunk':
-        print ("Chunk")
         target_data = (corpus.chunk_train, )
 
     # Turn on training mode
     total_loss = 0
     start_time = time.time()
     n_iteration = corpus.word_train.size(0) // (args.batch_size*args.seq_len) 
-    print ("number of iterations ", n_iteration) 
+
+
     iteration = 0
     for X, ys in get_batch(corpus.word_train, *target_data, batch_size=args.batch_size,
                            seq_len=args.seq_len, cuda=args.cuda):
-        print ("X:",X.shape)
-        print ("y:", len(ys))
         iteration += 1
         model.zero_grad()
         if args.train_mode == 'Joint':
-            #print ("Joint")
             if args.npos_layers == args.nchunk_layers:
-                print ("Joint in same layer")
                 hidden = model.rnn.init_hidden(args.batch_size)
                 outputs1, outputs2, hidden = model(X, hidden)
             else:
-                print ("Joint in different layers")
                 hidden1 = model.rnn1.init_hidden(args.batch_size)
-                print("init hidden1:", hidden1[0].shape, hidden1[1].shape )
                 hidden2 = model.init_rnn2_hidden(args.batch_size)
-                print("init hidden2:", hidden2[0].shape, hidden2[1].shape )
                 outputs1, outputs2, hidden1, hidden2 = model(X, hidden1, hidden2)
-                print ("returned: outputs1, outputs2, hidden1, hidden2")
 
-            loss1 = criterion(outputs1.view(-1, npos_tags), ys[0].view(-1))
-            print ("outputs1.view(-1, npos_tags):", outputs1.view(-1, npos_tags).shape)
-            print ("ys[0].view(-1):", ys[0].view(-1).shape)
-            print ("loss1:", loss1)
-            loss2 = criterion(outputs2.view(-1, nchunk_tags), ys[1].view(-1))
-            #print ("outputs2.view(-1, npos_tags):", (outputs2.view(-1, npos_tags)).shape)
-            #print ("ys[1].view(-1):", (ys[1].view(-1)).shape)
-            print ("loss2:", loss2)
-            loss = loss1 + loss2
-            print ("loss:", loss)
+            auxiliary_loss = args.lam*criterion(outputs1.view(-1, npos_tags), ys[0].view(-1))
+            primary_loss = criterion(outputs2.view(-1, nchunk_tags), ys[1].view(-1))
+            loss = auxiliary_loss + primary_loss
         else:
-            #print ("Not Joint")
             hidden = model.rnn.init_hidden(args.batch_size)
-            if iteration % args.log_interval == 0:
-                print ("hidden", hidden[0].shape, hidden[1].shape)
             outputs, hidden = model(X, hidden)
             loss = criterion(outputs.view(-1, ntags), ys[0].view(-1))
-            if iteration % args.log_interval == 0:
-                print ("loss:", loss)
 
-        loss.backward() 
+        if args.projection:
+            auxiliary_loss.backward(retain_graph=True)
+            for param in model.parameters():
+                if param.grad is not None:
+                    param.auxiliary_grad = param.grad.detach().clone()
+                    param.grad = None
+
+            primary_loss.backward(retain_graph=False)
+            for param in model.parameters():
+                if hasattr(param, 'auxiliary_grad'):
+                    if param.grad is not None:
+                        if args.alpha != 1:
+                            if hasattr(param, 'smoothed_primary_grad'):
+                                param.smoothed_primary_grad *= (1 - args.alpha)
+                                param.smoothed_primary_grad.add_(args.alpha*param.grad.detach().clone())
+                            else:
+                                param.smoothed_primary_grad = args.alpha*param.grad.detach().clone()
+                            param.grad.add_(censored_vector(param.auxiliary_grad, param.smoothed_primary_grad))
+                        else:
+                            param.grad.add_(censored_vector(param.auxiliary_grad, param.grad))
+                    else:
+                        param.grad = param.auxiliary_grad.clone()
+                    del param.auxiliary_grad
+        else:
+            loss.backward()
         
         # Prevent the exploding gradient
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
         optimizer.step()
+        for param in model.parameters():
+            param.grad = None
         total_loss += loss.data
         
         if iteration % args.log_interval == 0:
             cur_loss = total_loss / args.log_interval
             cur_loss = cur_loss.cpu().numpy()
             elapsed = time.time() - start_time
-            print('| epoch {:3d} | {:5d}/{:5d} iteration | {:5.2f} ms/batch | loss {:5.2f} |'.format(
-                epoch, iteration, n_iteration,
-                elapsed*1000/args.log_interval, 
-                cur_loss))
             loss_log.append(cur_loss)
             total_loss = 0
             start_time = time.time()
@@ -152,7 +194,6 @@ def train(loss_log):
 
 def evaluate(source, target):
     model.eval()
-    print ("evaluate")
     n_iteration = source.size(0) // (args.batch_size*args.seq_len)
     total_loss = 0
     for X_val, y_vals in get_batch(source, *target, batch_size=args.batch_size,
@@ -165,9 +206,7 @@ def evaluate(source, target):
                 hidden1 = model.rnn1.init_hidden(args.batch_size)
                 hidden2 = model.init_rnn2_hidden(args.batch_size)
                 outputs1, outputs2, hidden1, hidden2 = model(X_val, hidden1, hidden2)    
-            loss1 = criterion(outputs1.view(-1, npos_tags), y_vals[0].view(-1))
-            loss2 = criterion(outputs2.view(-1, nchunk_tags), y_vals[1].view(-1))
-            loss = loss1 + loss2
+            loss = criterion(outputs2.view(-1, nchunk_tags), y_vals[1].view(-1))
             # Make predict and calculate accuracy
             _, pred1 = outputs1.data.topk(1)
             _, pred2 = outputs2.data.topk(1)
@@ -184,9 +223,7 @@ def evaluate(source, target):
             loss = criterion(outputs.view(-1, ntags), y_vals[0].view(-1))
             _, pred = outputs.data.topk(1)
             accuracy = torch.sum(pred.squeeze(2) == y_vals[0].data) / (y_vals[0].size(0) * y_vals[0].size(1))
-            print ("evaluate/accuracy:", accuracy)
         total_loss += loss
-    print ("end evaluate")
     return total_loss/n_iteration, accuracy
 
 best_val_accuracies = []
@@ -238,10 +275,8 @@ for i in range(args.test_times):
     try:
         for epoch in range(1, args.epochs+1):
             epoch_start_time = time.time()
-            print('Begin training...')
             loss_log = train(loss_log)
             # Evaluation
-            print('Evaluating on the valid data')
             if args.train_mode == 'Joint':
                 valid_target_data = (corpus.pos_valid, corpus.chunk_valid)
             elif args.train_mode == 'POS':
@@ -250,19 +285,10 @@ for i in range(args.test_times):
                 valid_target_data = (corpus.chunk_valid, ) 
             
             val_loss, accuracy = evaluate(corpus.word_valid, valid_target_data)
-            print('-'*50)
             if args.train_mode == 'Joint':
                 val_loss = 1.0*val_loss
-                print ("epoch:", epoch)
-                print ("val_loss:", val_loss)
-                print ("accuracy len:", len(accuracy))
-                print ("accuracy0:", accuracy[0])
-                print ("accuracy1:", accuracy[1])
                 accuracy0 = 1.0*accuracy[0]
                 accuracy1 = 1.0*accuracy[1]
-                print('| end of epoch {:3d} | valid loss {:5.3f} | POS accuracy {:5.3f} | Chunk accuracy {:5.3}'.format(
-                    epoch, val_loss.item(), accuracy0.item(), accuracy1.item()
-                ))
             else:
                 print('| end of epoch {:3d} | valid loss {:5.3f} | accuracy {:5.3f} |'.format(
                     epoch, val_loss.data.cpu().numpy(), accuracy
@@ -277,7 +303,6 @@ for i in range(args.test_times):
             else:
                 early_stop_count += 1
             if early_stop_count >= patience:
-                print('\nEarly Stopping! \nBecause %d epochs the accuracy have no improvement.'%(patience))
                 break
     except KeyboardInterrupt:
         print('-'*50)
@@ -298,8 +323,6 @@ for i in range(args.test_times):
     elif args.train_mode == 'Chunk':
         test_target_data = (corpus.chunk_test, ) 
     test_loss, test_accuracy = evaluate(corpus.word_test, test_target_data)
-    print('='*50)
-    print("Evaluating on test data.")
     if args.train_mode == 'Joint':
         print('| end of epoch {:3d} | test loss {:5.3f} | POS test accuracy {:5.3f} | Chunk test accuracy {:5.3}'.format(
             epoch, test_loss.item(), test_accuracy[0].item(), test_accuracy[1].item()
@@ -317,19 +340,13 @@ for i in range(args.test_times):
 
 # Save results
 results = {
-    'corpus': corpus,
     'best_epoch': best_epoch,
     'best_val_loss': best_val_loss,
     'best_accuracy': best_accuracy,
     'test_accuracy': test_accuracy,
-    'loss_log': loss_log,
-
     'best_val_accuracies': best_val_accuracies,
     'test_accuracies': test_accuracies,
     'best_epoches': best_epoches
 }
-torch.save(results, '%s_emsize%d_npos_layers%d_nchunk_layers%d_nhid%d_dropout%3.1f_seqlen%d_bi%d_%s_result.pt' \
-                    %(args.save.strip(), args.emsize, args.npos_layers, args.nchunk_layers,
-                      args.nhid, args.dropout, args.seq_len, args.bi, args.rnn_type))
-
-            
+torch.save(results, '%s_seed%s_lam%s_alpha%s_projection%d_result.pt' \
+                    %(args.save.strip(), args.seed, args.lam, args.alpha, args.projection))
