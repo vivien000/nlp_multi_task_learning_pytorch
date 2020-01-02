@@ -171,7 +171,7 @@ def train(loss_log):
                                 param.smoothed_primary_grad.add_(args.alpha*param.grad.detach().clone())
                             else:
                                 param.smoothed_primary_grad = args.alpha*param.grad.detach().clone()
-                            param.grad.add_(censored_vector(param.auxiliary_grad, param.smoothed_primary_grad, args.mode)
+                            param.grad.add_(censored_vector(param.auxiliary_grad, param.smoothed_primary_grad, args.mode))
                         else:
                             param.grad.add_(censored_vector(param.auxiliary_grad, param.grad, args.mode))
                     else:
