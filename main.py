@@ -99,6 +99,8 @@ def censored_vector(u, v, mode='Projection'):
         return torch.max(u_dot_v, torch.tensor(0.).cuda())*u/l_u/l_v
     if mode == 'Projection':
         return u - torch.min(u_dot_v, torch.tensor(0.).cuda())*v/l_v/l_v
+    if mode == 'Orthogonal':
+        return u - u_dot_v*v/l_v/l_v
     if mode == 'Parameter-wise':
         return u*((torch.sign(u*v)+1)/2)
 
