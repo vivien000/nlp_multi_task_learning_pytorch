@@ -16,10 +16,12 @@ parser.add_argument('--lam', type=float, default=1.0,
                     help='lambda')
 parser.add_argument('--alpha', type=float, default=1.0,
                     help='alpha')
-parser.add_argument('--projection', action='store_true',
-                    help='use projection instead of multitask')
+parser.add_argument('--auxiliary', action='store_true',
+                    help='use a method other than multitask')
 parser.add_argument('--data', type=str, default='./data',
                     help='data file')
+parser.add_argument('--mode', type=str, default='Multitask',
+                    help='mode for auxiliary learning')
 parser.add_argument('--emsize', type=int, default=300,
                     help='size of word embeddings') 
 parser.add_argument('--npos_layers', type=int, default=1,
@@ -150,7 +152,7 @@ def train(loss_log):
             outputs, hidden = model(X, hidden)
             loss = criterion(outputs.view(-1, ntags), ys[0].view(-1))
 
-        if args.projection:
+        if args.auxiliary:
             auxiliary_loss.backward(retain_graph=True)
             for param in model.parameters():
                 if param.grad is not None:
@@ -167,9 +169,9 @@ def train(loss_log):
                                 param.smoothed_primary_grad.add_(args.alpha*param.grad.detach().clone())
                             else:
                                 param.smoothed_primary_grad = args.alpha*param.grad.detach().clone()
-                            param.grad.add_(censored_vector(param.auxiliary_grad, param.smoothed_primary_grad))
+                            param.grad.add_(censored_vector(param.auxiliary_grad, param.smoothed_primary_grad, args.mode)
                         else:
-                            param.grad.add_(censored_vector(param.auxiliary_grad, param.grad))
+                            param.grad.add_(censored_vector(param.auxiliary_grad, param.grad, args.mode))
                     else:
                         param.grad = param.auxiliary_grad.clone()
                     del param.auxiliary_grad
@@ -348,5 +350,5 @@ results = {
     'test_accuracies': test_accuracies,
     'best_epoches': best_epoches
 }
-torch.save(results, '%s_seed%s_lam%s_alpha%s_projection%d_result.pt' \
-                    %(args.save.strip(), args.seed, args.lam, args.alpha, args.projection))
+torch.save(results, '%s_seed%s_lam%s_alpha%s_mode-%s_result.pt' \
+                    %(args.save.strip(), args.seed, args.lam, args.alpha, args.mode.replace(' ', '_')))
